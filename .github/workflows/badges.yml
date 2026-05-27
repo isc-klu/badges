@@ -1,0 +1,44 @@
+name: Update Issue Ratio Badge
+
+on:
+  issues:
+    types: [opened, closed, reopened]
+  schedule:
+    - cron: '0 */6 * * *'  # Every 6 hours
+
+jobs:
+  update-badge:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Calculate ratio and update badge
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const open = await github.rest.search.issuesAndPullRequests({
+              q: `repo:${context.repo.owner}/${context.repo.repo} type:issue state:open`
+            });
+            const closed = await github.rest.search.issuesAndPullRequests({
+              q: `repo:${context.repo.owner}/${context.repo.repo} type:issue state:closed`
+            });
+
+            const openCount = open.data.total_count;
+            const closedCount = closed.data.total_count;
+            const total = openCount + closedCount;
+            const ratio = total > 0 ? ((closedCount / total) * 100).toFixed(1) : 0;
+
+            // Update gist for shields.io endpoint
+            const gist = await github.rest.gists.update({
+              gist_id: '${{ secrets.GIST_ID }}',
+              files: {
+                'issue-ratio.json': {
+                  content: JSON.stringify({
+                    schemaVersion: 1,
+                    label: 'issues closed',
+                    message: `${ratio}% (${closedCount}/${total})`,
+                    color: ratio > 80 ? 'brightgreen' : ratio > 50 ? 'yellow' : 'red'
+                  })
+                }
+              }
+            });
