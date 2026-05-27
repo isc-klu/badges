@@ -32,7 +32,7 @@ jobs:
             const gist = await github.rest.gists.update({
               gist_id: '${{ secrets.GIST_ID }}',
               files: {
-                'issue-ratio.json': {
+                'badges.json': {
                   content: JSON.stringify({
                     schemaVersion: 1,
                     label: 'issues closed',
