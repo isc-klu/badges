@@ -16,18 +16,22 @@ jobs:
         uses: actions/github-script@v7
         env:
           GIST_ID: ${{ secrets.GIST_ID }}
+          GIST_TOKEN: ${{ secrets.GIST_TOKEN }}
         with:
-          github-token: ${{ secrets.GIST_TOKEN }}
           script: |
             const gistId = process.env.GIST_ID;
+            const gistToken = process.env.GIST_TOKEN;
 
             if (!gistId) {
-              core.setFailed('GIST_ID secret is not set or is empty');
+              core.setFailed('GIST_ID secret is not set');
+              return;
+            }
+            if (!gistToken) {
+              core.setFailed('GIST_TOKEN secret is not set');
               return;
             }
 
-            core.info(`Using Gist ID: ${gistId}`);
-
+            // Use default github token for reading issues
             const open = await github.rest.search.issuesAndPullRequests({
               q: `repo:${context.repo.owner}/${context.repo.repo} type:issue state:open`
             });
@@ -49,13 +53,27 @@ jobs:
               color: ratio > 80 ? 'brightgreen' : ratio > 50 ? 'yellow' : 'red'
             });
 
-            await github.rest.gists.update({
-              gist_id: gistId,
-              files: {
-                'badges.json': {
-                  content: badgeData
+            // Use a separate fetch call with the PAT for gist update
+            const response = await fetch(`https://api.github.com/gists/${gistId}`, {
+              method: 'PATCH',
+              headers: {
+                'Authorization': `token ${gistToken}`,
+                'Accept': 'application/vnd.github.v3+json',
+                'Content-Type': 'application/json',
+              },
+              body: JSON.stringify({
+                files: {
+                  'badges.json': {
+                    content: badgeData
+                  }
                 }
-              }
+              })
             });
+
+            if (!response.ok) {
+              const error = await response.json();
+              core.setFailed(`Failed to update gist: ${response.status} - ${error.message}`);
+              return;
+            }
 
             core.info('Badge updated successfully');
