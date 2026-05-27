@@ -5,75 +5,88 @@ on:
     types: [opened, closed, reopened]
   schedule:
     - cron: '0 */6 * * *'
+  workflow_dispatch:
 
 jobs:
   update-badge:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-
-      - name: Calculate ratio and update badge
-        uses: actions/github-script@v7
+      - name: Debug token availability
         env:
           GIST_ID: ${{ secrets.GIST_ID }}
           GIST_TOKEN: ${{ secrets.GIST_TOKEN }}
-        with:
-          script: |
-            const gistId = process.env.GIST_ID;
-            const gistToken = process.env.GIST_TOKEN;
+        run: |
+          echo "GIST_ID length: ${#GIST_ID}"
+          echo "GIST_TOKEN length: ${#GIST_TOKEN}"
 
-            if (!gistId) {
-              core.setFailed('GIST_ID secret is not set');
-              return;
-            }
-            if (!gistToken) {
-              core.setFailed('GIST_TOKEN secret is not set');
-              return;
-            }
+          if [ -z "$GIST_TOKEN" ]; then
+            echo "::error::GIST_TOKEN is empty!"
+            exit 1
+          fi
 
-            // Use default github token for reading issues
-            const open = await github.rest.search.issuesAndPullRequests({
-              q: `repo:${context.repo.owner}/${context.repo.repo} type:issue state:open`
-            });
-            const closed = await github.rest.search.issuesAndPullRequests({
-              q: `repo:${context.repo.owner}/${context.repo.repo} type:issue state:closed`
-            });
+          if [ -z "$GIST_ID" ]; then
+            echo "::error::GIST_ID is empty!"
+            exit 1
+          fi
 
-            const openCount = open.data.total_count;
-            const closedCount = closed.data.total_count;
-            const total = openCount + closedCount;
-            const ratio = total > 0 ? ((closedCount / total) * 100).toFixed(1) : 0;
+      - name: Calculate ratio and update gist
+        env:
+          GIST_ID: ${{ secrets.GIST_ID }}
+          GIST_TOKEN: ${{ secrets.GIST_TOKEN }}
+          REPO: ${{ github.repository }}
+        run: |
+          OPEN=$(curl -s -H "Authorization: token $GIST_TOKEN" \
+            "https://api.github.com/search/issues?q=repo:${REPO}+type:issue+state:open" \
+            | jq '.total_count')
 
-            core.info(`Open: ${openCount}, Closed: ${closedCount}, Ratio: ${ratio}%`);
+          CLOSED=$(curl -s -H "Authorization: token $GIST_TOKEN" \
+            "https://api.github.com/search/issues?q=repo:${REPO}+type:issue+state:closed" \
+            | jq '.total_count')
 
-            const badgeData = JSON.stringify({
-              schemaVersion: 1,
-              label: 'issues closed',
-              message: `${ratio}% (${closedCount}/${total})`,
-              color: ratio > 80 ? 'brightgreen' : ratio > 50 ? 'yellow' : 'red'
-            });
+          TOTAL=$((OPEN + CLOSED))
 
-            // Use a separate fetch call with the PAT for gist update
-            const response = await fetch(`https://api.github.com/gists/${gistId}`, {
-              method: 'PATCH',
-              headers: {
-                'Authorization': `token ${gistToken}`,
-                'Accept': 'application/vnd.github.v3+json',
-                'Content-Type': 'application/json',
-              },
-              body: JSON.stringify({
-                files: {
-                  'badges.json': {
-                    content: badgeData
-                  }
-                }
-              })
-            });
+          if [ "$TOTAL" -gt 0 ]; then
+            RATIO=$(echo "scale=1; $CLOSED * 100 / $TOTAL" | bc)
+          else
+            RATIO="0"
+          fi
 
-            if (!response.ok) {
-              const error = await response.json();
-              core.setFailed(`Failed to update gist: ${response.status} - ${error.message}`);
-              return;
-            }
+          echo "Open: $OPEN, Closed: $CLOSED, Total: $TOTAL, Ratio: $RATIO%"
 
-            core.info('Badge updated successfully');
+          # Determine color
+          RATIO_INT=${RATIO%.*}
+          if [ "$RATIO_INT" -gt 80 ]; then
+            COLOR="brightgreen"
+          elif [ "$RATIO_INT" -gt 50 ]; then
+            COLOR="yellow"
+          else
+            COLOR="red"
+          fi
+
+          # Create badge JSON
+          BADGE_JSON=$(jq -n \
+            --argjson schema 1 \
+            --arg label "issues closed" \
+            --arg message "${RATIO}% (${CLOSED}/${TOTAL})" \
+            --arg color "$COLOR" \
+            '{schemaVersion: $schema, label: $label, message: $message, color: $color}')
+
+          echo "Badge JSON: $BADGE_JSON"
+
+          # Update gist and capture response
+          HTTP_CODE=$(curl -s -o /tmp/gist_response.json -w "%{http_code}" \
+            -X PATCH \
+            -H "Authorization: token $GIST_TOKEN" \
+            -H "Accept: application/vnd.github.v3+json" \
+            "https://api.github.com/gists/$GIST_ID" \
+            -d "$(jq -n --arg content "$BADGE_JSON" '{files: {"badges.json": {content: $content}}}')")
+
+          echo "HTTP Status: $HTTP_CODE"
+
+          if [ "$HTTP_CODE" -ne 200 ]; then
+            echo "::error::Failed to update gist (HTTP $HTTP_CODE)"
+            cat /tmp/gist_response.json
+            exit 1
+          fi
+
+          echo "✅ Badge updated successfully!"
