@@ -4,7 +4,7 @@ on:
   issues:
     types: [opened, closed, reopened]
   schedule:
-    - cron: '0 */6 * * *'  # Every 6 hours
+    - cron: '0 */6 * * *'
 
 jobs:
   update-badge:
@@ -14,9 +14,20 @@ jobs:
 
       - name: Calculate ratio and update badge
         uses: actions/github-script@v7
+        env:
+          GIST_ID: ${{ secrets.GIST_ID }}
         with:
           github-token: ${{ secrets.GIST_TOKEN }}
           script: |
+            const gistId = process.env.GIST_ID;
+
+            if (!gistId) {
+              core.setFailed('GIST_ID secret is not set or is empty');
+              return;
+            }
+
+            core.info(`Using Gist ID: ${gistId}`);
+
             const open = await github.rest.search.issuesAndPullRequests({
               q: `repo:${context.repo.owner}/${context.repo.repo} type:issue state:open`
             });
@@ -29,17 +40,22 @@ jobs:
             const total = openCount + closedCount;
             const ratio = total > 0 ? ((closedCount / total) * 100).toFixed(1) : 0;
 
-            // Update gist for shields.io endpoint
-            const gist = await github.rest.gists.update({
-              gist_id: '${{ secrets.GIST_ID }}',
+            core.info(`Open: ${openCount}, Closed: ${closedCount}, Ratio: ${ratio}%`);
+
+            const badgeData = JSON.stringify({
+              schemaVersion: 1,
+              label: 'issues closed',
+              message: `${ratio}% (${closedCount}/${total})`,
+              color: ratio > 80 ? 'brightgreen' : ratio > 50 ? 'yellow' : 'red'
+            });
+
+            await github.rest.gists.update({
+              gist_id: gistId,
               files: {
                 'badges.json': {
-                  content: JSON.stringify({
-                    schemaVersion: 1,
-                    label: 'issues closed',
-                    message: `${ratio}% (${closedCount}/${total})`,
-                    color: ratio > 80 ? 'brightgreen' : ratio > 50 ? 'yellow' : 'red'
-                  })
+                  content: badgeData
                 }
               }
             });
+
+            core.info('Badge updated successfully');
