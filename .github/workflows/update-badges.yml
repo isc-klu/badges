@@ -1,0 +1,70 @@
+name: Update Issue Ratio Badge
+
+on:
+  issues:
+    types: [opened, closed, reopened]
+  schedule:
+    - cron: '0 */6 * * *'
+  workflow_dispatch:
+
+permissions:
+  pages: write
+  id-token: write
+
+jobs:
+  update-badge:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+    steps:
+      - name: Compute issue stats
+        env:
+          REPO: ${{ github.repository }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          OPEN=$(curl -s -H "Authorization: token $GITHUB_TOKEN" \
+            "https://api.github.com/search/issues?q=repo:${REPO}+type:issue+state:open" \
+            | jq '.total_count')
+
+          CLOSED=$(curl -s -H "Authorization: token $GITHUB_TOKEN" \
+            "https://api.github.com/search/issues?q=repo:${REPO}+type:issue+state:closed" \
+            | jq '.total_count')
+
+          TOTAL=$((OPEN + CLOSED))
+
+          if [ "$TOTAL" -gt 0 ]; then
+            RATIO=$(echo "scale=1; $CLOSED * 100 / $TOTAL" | bc)
+          else
+            RATIO="0"
+          fi
+
+          echo "Open: $OPEN, Closed: $CLOSED, Total: $TOTAL, Ratio: $RATIO%"
+
+          RATIO_INT=${RATIO%.*}
+          if [ "$RATIO_INT" -gt 80 ]; then
+            COLOR="brightgreen"
+          elif [ "$RATIO_INT" -gt 50 ]; then
+            COLOR="yellow"
+          else
+            COLOR="red"
+          fi
+
+          mkdir -p _site/badges
+
+          jq -n \
+            --argjson schema 1 \
+            --arg label "issues closed" \
+            --arg message "${RATIO}% (${CLOSED}/${TOTAL})" \
+            --arg color "$COLOR" \
+            '{schemaVersion: $schema, label: $label, message: $message, color: $color}' \
+            > _site/badges/issues-ratio.json
+
+          cat _site/badges/issues-ratio.json
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+
+      - name: Deploy to GitHub Pages
+        uses: actions/deploy-pages@v4
